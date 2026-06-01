@@ -1,7 +1,8 @@
 # Plaintest — Daily Cessna 172 Finder
 
 Automatically searches aircraft listing sites once a day, ranks the best Cessna 172
-matches against my criteria, flags any "unicorn," and emails me a top-10 digest.
+matches against my criteria, flags any "unicorn," and publishes a web dashboard to
+GitHub Pages (plus a GitHub Issue alert for new unicorns).
 Runs free on GitHub Actions — no computer needs to be on.
 
 ## What it looks for
@@ -17,15 +18,48 @@ All criteria, price ceiling, and scoring weights live in the `CONFIG` block at t
 top of `plane_finder.py` — edit anytime.
 
 ## Files
-- `plane_finder.py` — the search, scoring, unicorn-detection, and email logic
-- `.github/workflows/daily-plane-finder.yml` — the daily schedule (runs on GitHub's servers)
+- `plane_finder.py` — search, scoring, unicorn-detection, dashboard + digest output
+- `.github/workflows/daily-plane-finder.yml` — daily schedule + Pages deploy (runs on GitHub's servers)
 - `requirements.txt` — Python dependencies
+
+## How you get the results
+- **Web dashboard (primary):** every run publishes a sortable, filterable dashboard
+  to **GitHub Pages** — the latest top matches, any unicorns, and a matches-per-day
+  trend. Once Pages is enabled (below), it lives at:
+
+  **https://mparisi78.github.io/plaintest/**
+
+- **Unicorn alerts:** the workflow opens a **GitHub Issue** _only when a new unicorn
+  appears_, so you get a notification for the rare standout without daily noise.
+
+Both use the built-in `GITHUB_TOKEN` — no secrets required.
 
 ## One-time setup
 
-### 1. Add email secrets
-Repo **Settings → Secrets and variables → Actions → New repository secret**.
-Add these five (use a Gmail **App Password**, not your normal password):
+### 1. Enable GitHub Pages
+**Settings → Pages → Build and deployment → Source: GitHub Actions.**
+(Pages on a **private** repo requires GitHub Pro/Team; public repos are free.)
+
+### 2. Allow the workflow to write
+**Settings → Actions → General → Workflow permissions → Read and write permissions.**
+This lets it open issues and commit the state/history files.
+
+### 3. Test it
+**Actions** tab → **Daily Plane Finder** → **Run workflow**. Watch the log; you'll
+see it fetch each site, score listings, build the dashboard, deploy to Pages, and
+(if there's a new unicorn) open an issue. The dashboard link prints in the
+**deploy** step output.
+
+### 4. It's now automatic
+The schedule runs daily at **12:00 UTC** (7 AM US Central / 8 AM Eastern). To change
+the time, edit the `cron:` line in the workflow — format is `minute hour day month weekday`,
+always in UTC.
+
+## Optional: email delivery
+The script can also email the digest over SMTP instead of (or in addition to)
+the issue. Add these five secrets under **Settings → Secrets and variables →
+Actions** and wire them into the workflow's "Run plane finder" step as env vars
+(use a Gmail **App Password**, not your normal password):
 
 | Secret name      | Value                                  |
 |------------------|----------------------------------------|
@@ -36,15 +70,6 @@ Add these five (use a Gmail **App Password**, not your normal password):
 | `PF_TO_ADDR`     | where the digest should be sent        |
 
 Gmail App Password: Google Account → Security → 2-Step Verification → App passwords.
-
-### 2. Test it
-**Actions** tab → **Daily Plane Finder** → **Run workflow**. Watch the log; you'll
-see it fetch each site, score listings, and email (or print) the digest.
-
-### 3. It's now automatic
-The schedule runs daily at **12:00 UTC** (7 AM US Central / 8 AM Eastern). To change
-the time, edit the `cron:` line in the workflow — format is `minute hour day month weekday`,
-always in UTC.
 
 ## Honest expectations
 - Listing sites sometimes **block automated requests (HTTP 403)**. If a run shows

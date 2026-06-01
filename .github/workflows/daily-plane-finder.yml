@@ -1,0 +1,95 @@
+name: Daily Plane Finder
+
+# Runs the Cessna 172 finder once a day and on manual demand, publishes a web
+# dashboard to GitHub Pages, and opens a GitHub Issue only when a NEW unicorn
+# shows up. No secrets to configure — it uses the built-in GITHUB_TOKEN.
+# See README.md.
+
+on:
+  schedule:
+    # 12:00 UTC daily (7 AM US Central / 8 AM Eastern).
+    # Format: minute hour day month weekday — always in UTC.
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # commit the seen/history state back
+  issues: write     # open unicorn-alert issues
+  pages: write      # deploy to GitHub Pages
+  id-token: write   # required by deploy-pages
+
+# Don't let a slow run overlap with the next scheduled one.
+concurrency:
+  group: daily-plane-finder
+  cancel-in-progress: false
+
+jobs:
+  find-planes:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run plane finder
+        env:
+          PF_DIGEST_MD: digest.md        # markdown digest (for the issue)
+          PF_SITE_DIR: site              # static dashboard output dir
+          PF_HISTORY: plane_finder_history.json  # day-over-day trend, committed back
+        run: python plane_finder.py
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload dashboard artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Open issue on new unicorn
+        # Only alert when there's a genuinely new unicorn — the dashboard is the
+        # day-to-day view, so we don't open a fresh issue every single run.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if grep -q "UNICORN ALERT" digest.md; then
+            gh issue create \
+              --title "🦄 New Cessna 172 unicorn — $(date -u +%Y-%m-%d)" \
+              --body-file digest.md \
+              --label plane-finder 2>/dev/null \
+            || gh issue create \
+              --title "🦄 New Cessna 172 unicorn — $(date -u +%Y-%m-%d)" \
+              --body-file digest.md
+          else
+            echo "No new unicorn; dashboard updated, no issue opened."
+          fi
+
+      - name: Persist state (seen + history)
+        # Commit updated state so the next run remembers seen unicorns and keeps
+        # the dashboard trend. Skips cleanly if nothing changed.
+        run: |
+          changed="$(git status --porcelain plane_finder_seen.json plane_finder_history.json)"
+          if [[ -n "$changed" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add plane_finder_seen.json plane_finder_history.json
+            git commit -m "chore: update plane finder state [skip ci]"
+            git push
+          else
+            echo "No state change to commit."
+          fi
