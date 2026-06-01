@@ -7,15 +7,33 @@ Runs free on GitHub Actions — no computer needs to be on.
 
 ## What it looks for
 - Cessna 172, **1975 or newer**
+- **US-based** sellers (listings located abroad are dropped)
 - **No reported damage history**
 - **Low total time** preferred
-- **Under $75,000** — unless it's a unicorn worth stretching for
+- **Under $75,000** — unless it's a unicorn worth stretching for (hard ceiling $140k)
 
 A *unicorn* = either a 1975+ clean, low-time 172 that somehow lists at/under $75k,
 or a late-model 172R/172S with very low time and no damage (the "won't outgrow it" plane).
 
+Each match gets a **score from 0–100%** (a whole-number percentage of the best
+possible score across price, total time, engine SMOH, avionics, damage, and year).
 All criteria, price ceiling, and scoring weights live in the `CONFIG` block at the
 top of `plane_finder.py` — edit anytime.
+
+## Sources it checks
+US-based aircraft marketplaces, in priority order:
+
+| Source | Status | Notes |
+|--------|--------|-------|
+| **GlobalAir** | ✅ reliable | Reads structured schema.org data — exact price, total time, engine SMOH, location, avionics. |
+| **Barnstormers** | ✅ reliable | Parses each classified's ad text for price, specs, and location. |
+| Trade-A-Plane | ⚠️ often blocked | Frequently returns HTTP 403 to automated requests; parses automatically whenever reachable. |
+| Controller | ⚠️ often blocked | JavaScript-rendered / bot-walled. |
+| Aircraft Shopper Online (ASO) | ⚠️ often blocked | Returns HTTP 403 to automated requests. |
+
+Tuning knobs (env vars, also in `CONFIG`): `PF_MAX_DETAILS`, `PF_MAX_PAGES`,
+`PF_FETCH_DELAY`. The script fetches each listing's detail page (where price and
+specs live), so it crawls politely with a delay between requests.
 
 ## Files
 - `plane_finder.py` — search, scoring, unicorn-detection, dashboard + digest output

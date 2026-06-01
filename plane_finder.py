@@ -34,6 +34,7 @@ import os
 import re
 import sys
 import json
+import time
 import smtplib
 import datetime as dt
 from dataclasses import dataclass, field, asdict
@@ -77,11 +78,19 @@ CONFIG = {
         "to_addr":  os.environ.get("PF_TO_ADDR", ""),       # where the digest goes
     },
 
-    # --- politeness ---
+    # --- US-only ---
+    # Drop listings whose location is clearly outside the US (keep unknowns).
+    "us_only": True,
+
+    # --- politeness / crawl limits ---
     "request_timeout": 20,
-    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    # Per-source cap on how many detail pages we fetch (prices/specs live there).
+    "max_detail_fetches": int(os.environ.get("PF_MAX_DETAILS", "40")),
+    "max_pages": int(os.environ.get("PF_MAX_PAGES", "4")),  # search-result pages per source
+    "fetch_delay": float(os.environ.get("PF_FETCH_DELAY", "0.6")),  # seconds between requests
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/120.0 Safari/537.36",
+                  "Chrome/123.0 Safari/537.36",
     # On GitHub Actions we want this in the repo so it can be committed between
     # runs. Locally it falls back to your home directory. Override with PF_STATE.
     "state_file": os.environ.get(
@@ -123,13 +132,16 @@ class Listing:
 # PARSERS  -- one function per site. THESE are the brittle part.
 # If a site changes layout, fix only the matching parser below.
 # =============================================================================
-def _get(url: str) -> str | None:
+def _get(url: str, referer: str | None = None) -> str | None:
+    headers = {
+        "User-Agent": CONFIG["user_agent"],
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    if referer:
+        headers["Referer"] = referer
     try:
-        r = requests.get(
-            url,
-            headers={"User-Agent": CONFIG["user_agent"]},
-            timeout=CONFIG["request_timeout"],
-        )
+        r = requests.get(url, headers=headers, timeout=CONFIG["request_timeout"])
         if r.status_code == 200:
             return r.text
         print(f"  [warn] {url} returned HTTP {r.status_code}")
@@ -142,7 +154,7 @@ def _num(text: str) -> int | None:
     """Pull the first integer out of a messy string like '$74,500' or '3,150 TT'."""
     if not text:
         return None
-    m = re.search(r"[\d,]+", text.replace(".", ""))
+    m = re.search(r"[\d,]+", str(text).replace(".", ""))
     if not m:
         return None
     try:
@@ -151,34 +163,265 @@ def _num(text: str) -> int | None:
         return None
 
 
-def parse_trade_a_plane(html: str) -> list[Listing]:
-    """
-    Parser for Trade-A-Plane search results.
-    NOTE: selectors below are illustrative and WILL need to be matched to the
-    live page structure the first time you run this. Run with --debug to dump
-    the HTML and adjust the CSS selectors.
-    """
-    out: list[Listing] = []
-    if not html:
-        return out
-    soup = BeautifulSoup(html, "html.parser")
-    cards = soup.select(".result, .listing, [class*=listing]")
-    for c in cards:
-        title_el = c.select_one("a, .title, h2, h3")
-        if not title_el:
-            continue
-        title = title_el.get_text(" ", strip=True)
-        href = title_el.get("href", "")
-        if href and href.startswith("/"):
-            href = "https://www.trade-a-plane.com" + href
-        body = c.get_text(" ", strip=True)
+# --- US vs non-US location detection ------------------------------------------
+_US_STATE_NAMES = {
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+    "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
+    "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine",
+    "maryland", "massachusetts", "michigan", "minnesota", "mississippi",
+    "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey",
+    "new mexico", "new york", "north carolina", "north dakota", "ohio",
+    "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina",
+    "south dakota", "tennessee", "texas", "utah", "vermont", "virginia",
+    "washington", "west virginia", "wisconsin", "wyoming",
+}
+_US_STATE_ABBR = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL",
+    "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT",
+    "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI",
+    "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+}
+_NON_US = re.compile(
+    r"\b("
+    # North America (non-US) + provinces
+    r"canada|quebec|ontario|alberta|manitoba|saskatchewan|british columbia|"
+    r"nova scotia|newfoundland|new brunswick|prince edward|"
+    # Europe
+    r"united kingdom|england|scotland|wales|ireland|germany|france|spain|"
+    r"italy|netherlands|holland|belgium|luxembourg|switzerland|austria|sweden|"
+    r"norway|denmark|finland|iceland|poland|czech|slovakia|hungary|romania|"
+    r"bulgaria|serbia|croatia|slovenia|portugal|greece|cyprus|malta|estonia|"
+    r"latvia|lithuania|ukraine|belarus|moldova|"
+    # Americas (non-US)
+    r"mexico|brazil|argentina|chile|colombia|peru|ecuador|bolivia|paraguay|"
+    r"uruguay|venezuela|guatemala|panama|costa rica|dominican|bahamas|"
+    # Africa / Middle East
+    r"morocco|egypt|south africa|kenya|nigeria|ghana|tunisia|algeria|"
+    r"uae|united arab|dubai|abu dhabi|saudi|qatar|kuwait|bahrain|oman|israel|"
+    r"jordan|lebanon|turkey|"
+    # Asia / Oceania
+    r"australia|new zealand|japan|china|hong kong|taiwan|south korea|"
+    r"india|pakistan|bangladesh|sri lanka|thailand|vietnam|malaysia|singapore|"
+    r"indonesia|philippines|"
+    r"russia"
+    r")\b", re.I)
 
-        out.append(_listing_from_text("Trade-A-Plane", title, body, href))
+
+def _is_us(location: str | None) -> bool | None:
+    """True if clearly US, False if clearly non-US, None if unknown."""
+    if not location:
+        return None
+    low = location.lower()
+    if _NON_US.search(low):
+        return False
+    if "usa" in low or "u.s.a" in low or "united states" in low:
+        return True
+    if any(st in low for st in _US_STATE_NAMES):
+        return True
+    if any(tok in _US_STATE_ABBR for tok in re.findall(r"\b[A-Z]{2}\b", location)):
+        return True
+    return None
+
+
+def _extract_smoh(text: str) -> int | None:
+    """Engine hours since major overhaul, from free text like '635 hours SMOH'."""
+    m = re.search(
+        r"([\d,]{1,5})\s*(?:hrs?\.?\s*)?(?:hours?\s*)?"
+        r"(?:since\s+(?:major\s+)?overhaul|smoh|stoh)",
+        (text or "").lower())
+    return _num(m.group(1)) if m else None
+
+
+def _detect_damage(text: str) -> bool | None:
+    """False = explicitly clean, True = damage mentioned, None = unknown.
+
+    Checks the "clean" phrasing first so a "Damage History: No" field (or a nav
+    link to a Salvage category) is never mistaken for actual damage.
+    """
+    low = (text or "").lower()
+    if re.search(
+            r"no (?:known |reported )?damage(?: history)?|damage[- ]free|"
+            r"no accident|accident[ /]*free|"
+            r"damage history[:\s]*\b(?:no|none|nil)\b|"
+            r"clean (?:accident|incident|damage)?[ /]*(?:history|record)", low):
+        return False
+    if re.search(
+            r"\bsalvage(?:d| title| project)\b|\bwrecked\b|prop(?:eller)? strike|"
+            r"gear[- ]?up landing|substantial damage|sustained damage|"
+            r"\bhas damage\b|damage history[:\s]*\byes\b", low):
+        return True
+    return None
+
+
+def _detect_ifr(text: str) -> bool:
+    return bool(re.search(
+        r"\bifr\b|garmin|g5\b|gtn|gns|ads-?b|glass|g1000|gfc|waas|aspen|avidyne",
+        (text or "").lower()))
+
+
+def _model_variant(title: str, fallback: str = "172") -> str:
+    mm = re.search(r"172\s?([a-z]{1,2})\b", title.lower())
+    return "172" + mm.group(1).upper() if mm else fallback
+
+
+def _listing_from_text(source: str, title: str, body: str, url: str,
+                       location: str = "") -> Listing:
+    """Extract structured fields from free-text listing copy."""
+    body_l = body.lower()
+
+    year = None
+    ym = re.search(r"\b(19[5-9]\d|20[0-2]\d)\b", title) or re.search(r"\b(19[5-9]\d|20[0-2]\d)\b", body)
+    if ym:
+        year = int(ym.group(0))
+        if year > dt.date.today().year + 1:   # guard against stray future dates
+            year = None
+
+    price = None
+    pm = re.search(r"\$\s?([\d,]{4,})", body)
+    if pm:
+        price = _num(pm.group(1))
+
+    tt = None
+    ttm = re.search(r"([\d,]{2,6})\s*(?:hrs?\s*)?(?:tt(?:sn|af)?|total time|ttaf|airframe)", body_l)
+    if ttm:
+        tt = _num(ttm.group(1))
+
+    return Listing(
+        source=source, title=title, year=year, model=_model_variant(title),
+        price=price, total_time=tt, engine_smoh=_extract_smoh(body),
+        damage_history=_detect_damage(body), ifr_ready=_detect_ifr(body),
+        url=url, location=location,
+    )
+
+
+# --- GlobalAir: detail pages carry rich schema.org JSON-LD --------------------
+def _globalair_item(html: str) -> dict | None:
+    """Return the schema.org aircraft item dict from a GlobalAir detail page."""
+    if not html:
+        return None
+    soup = BeautifulSoup(html, "html.parser")
+    for s in soup.find_all("script", {"type": "application/ld+json"}):
+        raw = s.string or s.get_text()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if isinstance(obj, dict) and obj.get("@type") == "ItemList":
+            for el in obj.get("itemListElement", []):
+                if isinstance(el, dict) and isinstance(el.get("item"), dict):
+                    return el["item"]
+    return None
+
+
+def _listing_from_globalair(item: dict, url: str) -> Listing:
+    def ga(key, default=""):
+        return item.get("ga:" + key, default) or ""
+
+    name = item.get("name") or "Cessna 172"
+
+    year = item.get("vehicleModelDate") or ga("year")
+    try:
+        year = int(year) if year else None
+    except (TypeError, ValueError):
+        year = None
+    if year and year > dt.date.today().year + 1:
+        year = None
+
+    price = None
+    offers = item.get("offers") or {}
+    if isinstance(offers, dict) and offers.get("price"):
+        price = _num(str(offers["price"]))
+    if price is None:
+        price = _num(str(ga("aircraftPrice")))
+
+    avionics = f"{ga('avionicsPackage')} {ga('avionicsDetails')}"
+    history = f"{ga('aircraftMaintenance')} {ga('airframeDetails')} {ga('shortSummary')}"
+    desig = str(ga("aircraftDesignation") or "172")
+
+    return Listing(
+        source="GlobalAir", title=name, year=year,
+        model=_model_variant(name, desig if desig.startswith("172") else "172"),
+        price=price, total_time=_num(str(ga("totalTime"))),
+        engine_smoh=_extract_smoh(str(ga("engineDetails")) + " " + str(ga("propellerDetails"))),
+        damage_history=_detect_damage(history),
+        ifr_ready=_detect_ifr(avionics),
+        url=url, location=str(ga("aircraftLocation")),
+    )
+
+
+def parse_globalair(list_html: str) -> list[Listing]:
+    out: list[Listing] = []
+    base = "https://www.globalair.com/aircraft-for-sale/cessna-172"
+    pages = [list_html] if list_html else []
+    # walk a few result pages so we have a real pool to rank, not just page 1
+    for p in range(2, CONFIG["max_pages"] + 1):
+        h = _get(f"{base}?page={p}", referer=base)
+        time.sleep(CONFIG["fetch_delay"])
+        if not h:
+            break
+        pages.append(h)
+
+    seen, detail_urls = set(), []
+    for html in pages:
+        for a in BeautifulSoup(html, "html.parser").find_all("a", href=True):
+            href = a["href"]
+            if "listing-detail" in href:
+                if href.startswith("/"):
+                    href = "https://www.globalair.com" + href
+                if href not in seen:
+                    seen.add(href)
+                    detail_urls.append(href)
+
+    for url in detail_urls[:CONFIG["max_detail_fetches"]]:
+        html = _get(url, referer=base)
+        time.sleep(CONFIG["fetch_delay"])
+        item = _globalair_item(html)
+        if item:
+            out.append(_listing_from_globalair(item, url))
+    return out
+
+
+# --- Barnstormers: category page -> per-listing detail pages (free text) ------
+def parse_barnstormers(list_html: str) -> list[Listing]:
+    out: list[Listing] = []
+    if not list_html:
+        return out
+    soup = BeautifulSoup(list_html, "html.parser")
+    seen, details = set(), []
+    for a in soup.find_all("a", href=True):
+        href, text = a["href"], a.get_text(" ", strip=True)
+        if re.search(r"/classified-\d+", href) and "172" in text:
+            if href.startswith("/"):
+                href = "https://www.barnstormers.com" + href
+            href = href.split("?")[0]
+            if href not in seen:
+                seen.add(href)
+                details.append((href, text))
+    ref = "https://www.barnstormers.com/category-17352-Cessna.html"
+    for href, title in details[:CONFIG["max_detail_fetches"]]:
+        html = _get(href, referer=ref)
+        time.sleep(CONFIG["fetch_delay"])
+        if not html:
+            out.append(_listing_from_text("Barnstormers", title, title, href))
+            continue
+        soup2 = BeautifulSoup(html, "html.parser")
+        # Parse specs from the ad body only — the site-wide nav lists a
+        # "Salvage" category that would otherwise trip damage detection.
+        container = soup2.find("div", class_="listings")
+        ad = container.get_text(" ", strip=True) if container else title
+        page_text = soup2.get_text(" ", strip=True)
+        loc = ""
+        lm = re.search(r"located\s+([A-Za-z][A-Za-z .,'\-]{2,40})", page_text)
+        if lm:
+            loc = lm.group(1).strip(" .,")
+        out.append(_listing_from_text("Barnstormers", title, ad, href, location=loc))
     return out
 
 
 def parse_generic(source: str, html: str, base_url: str) -> list[Listing]:
-    """A best-effort generic parser for sites we haven't hand-tuned."""
+    """Best-effort parser for sites we haven't hand-tuned (or that block us)."""
     out: list[Listing] = []
     if not html:
         return out
@@ -193,62 +436,27 @@ def parse_generic(source: str, html: str, base_url: str) -> list[Listing]:
     return out
 
 
-def _listing_from_text(source: str, title: str, body: str, url: str) -> Listing:
-    """Extract structured fields from free-text listing copy."""
-    body_l = body.lower()
-
-    year = None
-    ym = re.search(r"\b(19[5-9]\d|20[0-2]\d)\b", title) or re.search(r"\b(19[5-9]\d|20[0-2]\d)\b", body)
-    if ym:
-        year = int(ym.group(0))
-
-    price = None
-    pm = re.search(r"\$\s?([\d,]{4,})", body)
-    if pm:
-        price = _num(pm.group(1))
-
-    tt = None
-    ttm = re.search(r"([\d,]{2,6})\s*(?:hrs?\s*)?(?:tt|total time|ttaf|airframe)", body_l)
-    if ttm:
-        tt = _num(ttm.group(1))
-
-    smoh = None
-    sm = re.search(r"([\d,]{1,5})\s*(?:hrs?\s*)?(?:smoh|since (?:major )?overhaul|stoh)", body_l)
-    if sm:
-        smoh = _num(sm.group(1))
-
-    # damage: look for explicit clean vs explicit damage
-    damage = None
-    if re.search(r"no (?:known )?damage|damage[- ]free|no accident|clean history", body_l):
-        damage = False
-    elif re.search(r"\bdamage history\b|\bsalvage\b|\bwrecked\b|prop strike|gear up", body_l):
-        damage = True
-
-    ifr = bool(re.search(r"\bifr\b|garmin|g5|gtn|gns|ads-?b|glass|g1000", body_l))
-
-    model = "172"
-    mm = re.search(r"172\s?([a-z]{1,2})\b", title.lower())
-    if mm:
-        model = "172" + mm.group(1).upper()
-
-    return Listing(
-        source=source, title=title, year=year, model=model, price=price,
-        total_time=tt, engine_smoh=smoh, damage_history=damage,
-        ifr_ready=ifr, url=url,
-    )
-
-
-# Search URLs to hit each day. Add/adjust freely.
+# Search URLs to hit each day. US-based marketplaces.
+# GlobalAir and Barnstormers parse reliably; Trade-A-Plane / Controller / ASO
+# often block automated requests (HTTP 403) — they're kept as targets so they
+# light up automatically whenever they're reachable. See README.
 SEARCH_TARGETS = [
+    ("GlobalAir",
+     "https://www.globalair.com/aircraft-for-sale/cessna-172",
+     parse_globalair),
+    ("Barnstormers",
+     "https://www.barnstormers.com/category-17352-Cessna.html",
+     parse_barnstormers),
     ("Trade-A-Plane",
-     "https://www.trade-a-plane.com/search?make=CESSNA&model_group=CESSNA+172+SERIES&s-type=aircraft",
-     parse_trade_a_plane),
+     "https://www.trade-a-plane.com/search?category_level1=Single+Engine+Piston"
+     "&make=CESSNA&model_group=172+SERIES&s-type=aircraft",
+     lambda h: parse_generic("Trade-A-Plane", h, "https://www.trade-a-plane.com")),
     ("Controller",
      "https://www.controller.com/listings/for-sale/cessna/172/aircraft",
      lambda h: parse_generic("Controller", h, "https://www.controller.com")),
-    ("GlobalAir",
-     "https://www.globalair.com/aircraft-for-sale/cessna-172",
-     lambda h: parse_generic("GlobalAir", h, "https://www.globalair.com")),
+    ("ASO",
+     "https://www.aso.com/listings/aircraft-for-sale/Cessna/172",
+     lambda h: parse_generic("ASO", h, "https://www.aso.com")),
 ]
 
 
@@ -256,9 +464,16 @@ SEARCH_TARGETS = [
 # FILTER + SCORE
 # =============================================================================
 def passes_hard_filters(l: Listing) -> bool:
+    # drop ads that aren't actually a plane for sale
+    if re.search(r"\b(rental|for rent|lease|wanted|seeking|partnership|"
+                 r"fractional|time ?build|flying club|hangar for)\b", l.title.lower()):
+        return False
     if l.year is not None and l.year < CONFIG["min_year"]:
         return False
     if CONFIG["require_no_damage"] and l.damage_history is True:
+        return False
+    # keep US listings and unknowns; drop the ones clearly located abroad
+    if CONFIG["us_only"] and _is_us(l.location) is False:
         return False
     # price: allow if under ceiling, OR unknown (we'll surface it), OR potential unicorn
     if l.price is not None and l.price > CONFIG["unicorn_price_stretch"]:
@@ -268,6 +483,7 @@ def passes_hard_filters(l: Listing) -> bool:
 
 def score_listing(l: Listing) -> None:
     w = CONFIG["weights"]
+    max_score = sum(w.values())  # full marks on every weighted factor
     s = 0.0
     reasons = []
 
@@ -305,7 +521,8 @@ def score_listing(l: Listing) -> None:
         yscore = max(0.0, min(1.0, (l.year - CONFIG["min_year"]) / (2010 - CONFIG["min_year"])))
         s += w["year"] * yscore
 
-    l.score = round(s, 2)
+    # express the score as a whole-number percentage of the best possible score
+    l.score = round(s / max_score * 100) if max_score else 0
     l.reasons = reasons
 
     # --- unicorn detection ---
@@ -375,7 +592,7 @@ def build_email_html(top: list[Listing], unicorns: list[Listing]) -> str:
         tt = f"{l.total_time:,} TT" if l.total_time else "TT ?"
         parts.append(
             f"<li><b><a href='{l.url}'>{l.title}</a></b> "
-            f"(score {l.score})<br>"
+            f"(score {l.score}%)<br>"
             f"{price} &middot; {tt} &middot; {l.model} &middot; {l.source}<br>"
             f"<span style='color:#555'>{'; '.join(l.reasons) or 'partial data'}</span></li>"
         )
@@ -408,9 +625,10 @@ def build_digest_markdown(top: list[Listing], unicorns: list[Listing]) -> str:
     for i, l in enumerate(top, 1):
         price = f"${l.price:,}" if l.price else "price n/a"
         tt = f"{l.total_time:,} TT" if l.total_time else "TT ?"
+        loc = f" · {l.location}" if l.location else ""
         lines.append(
-            f"{i}. **[{l.title}]({l.url})** (score {l.score})  \n"
-            f"   {price} · {tt} · {l.model} · {l.source}  \n"
+            f"{i}. **[{l.title}]({l.url})** (score {l.score}%)  \n"
+            f"   {price} · {tt} · {l.model}{loc} · {l.source}  \n"
             f"   {'; '.join(l.reasons) or 'partial data'}"
         )
     lines.append("")
@@ -511,6 +729,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
     <th data-k="total_time">TT</th>
     <th data-k="model">Model</th>
     <th data-k="year">Year</th>
+    <th data-k="location">Location</th>
     <th data-k="source">Source</th>
   </tr></thead>
   <tbody></tbody>
@@ -560,21 +779,22 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
     document.querySelector("#tbl tbody").innerHTML = list.map(l => `
       <tr>
         <td>${l.rank}${l.unicorn ? '<span class="pill">UNICORN</span>' : ''}</td>
-        <td>${l.score}</td>
+        <td>${l.score}%</td>
         <td><a href="${l.url}" target="_blank" rel="noopener">${esc(l.title)}</a>
             <div class="reasons">${esc((l.reasons||[]).join("; "))}</div></td>
         <td>${l.price ? "$" + l.price.toLocaleString() : "&mdash;"}</td>
         <td>${l.total_time ? l.total_time.toLocaleString() : "&mdash;"}</td>
         <td>${esc(l.model)}</td>
         <td>${l.year ?? "&mdash;"}</td>
+        <td>${esc(l.location) || "&mdash;"}</td>
         <td>${esc(l.source)}</td>
-      </tr>`).join("") || '<tr><td colspan="8">No matches this run.</td></tr>';
+      </tr>`).join("") || '<tr><td colspan="9">No matches this run.</td></tr>';
   }
 
   function sortAndRender() {
     const f = document.getElementById("filter").value.toLowerCase();
     let list = rows.filter(l =>
-      (l.title + " " + l.model + " " + l.source).toLowerCase().includes(f));
+      (l.title + " " + l.model + " " + l.source + " " + (l.location||"")).toLowerCase().includes(f));
     list.sort((a, b) => {
       const x = a[sortK], y = b[sortK];
       const v = (x == null) - (y == null) ||
@@ -704,7 +924,7 @@ def main(debug: bool = False) -> None:
     print(f"TOP {len(top)}:")
     for i, l in enumerate(top, 1):
         price = f"${l.price:,}" if l.price else "n/a"
-        print(f"  {i:2}. [{l.score:5.2f}] {l.title} | {price} | {l.source}")
+        print(f"  {i:2}. [{l.score:3d}%] {l.title} | {price} | {l.source}")
     print("=" * 60)
 
 
