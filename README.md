@@ -21,11 +21,33 @@ top of `plane_finder.py` — edit anytime.
 - `.github/workflows/daily-plane-finder.yml` — the daily schedule (runs on GitHub's servers)
 - `requirements.txt` — Python dependencies
 
+## How you get the digest
+By default the workflow posts each run's results as a **GitHub Issue** titled
+`Cessna 172 digest — YYYY-MM-DD`. GitHub emails/notifies you about new issues,
+so there's **nothing to configure** — it uses the built-in `GITHUB_TOKEN`.
+
+Want email instead? See [Optional: email delivery](#optional-email-delivery) below.
+
 ## One-time setup
 
-### 1. Add email secrets
-Repo **Settings → Secrets and variables → Actions → New repository secret**.
-Add these five (use a Gmail **App Password**, not your normal password):
+### 1. Test it
+**Actions** tab → **Daily Plane Finder** → **Run workflow**. Watch the log; you'll
+see it fetch each site, score listings, write the digest, and open the issue.
+
+> First run only: if you see a permissions error opening the issue, go to
+> **Settings → Actions → General → Workflow permissions** and select
+> **Read and write permissions**.
+
+### 2. It's now automatic
+The schedule runs daily at **12:00 UTC** (7 AM US Central / 8 AM Eastern). To change
+the time, edit the `cron:` line in the workflow — format is `minute hour day month weekday`,
+always in UTC.
+
+## Optional: email delivery
+The script can also email the digest over SMTP instead of (or in addition to)
+the issue. Add these five secrets under **Settings → Secrets and variables →
+Actions** and wire them into the workflow's "Run plane finder" step as env vars
+(use a Gmail **App Password**, not your normal password):
 
 | Secret name      | Value                                  |
 |------------------|----------------------------------------|
@@ -36,15 +58,6 @@ Add these five (use a Gmail **App Password**, not your normal password):
 | `PF_TO_ADDR`     | where the digest should be sent        |
 
 Gmail App Password: Google Account → Security → 2-Step Verification → App passwords.
-
-### 2. Test it
-**Actions** tab → **Daily Plane Finder** → **Run workflow**. Watch the log; you'll
-see it fetch each site, score listings, and email (or print) the digest.
-
-### 3. It's now automatic
-The schedule runs daily at **12:00 UTC** (7 AM US Central / 8 AM Eastern). To change
-the time, edit the `cron:` line in the workflow — format is `minute hour day month weekday`,
-always in UTC.
 
 ## Honest expectations
 - Listing sites sometimes **block automated requests (HTTP 403)**. If a run shows

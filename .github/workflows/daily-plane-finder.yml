@@ -1,7 +1,8 @@
 name: Daily Plane Finder
 
-# Runs the Cessna 172 finder once a day and on manual demand.
-# See README.md for the one-time secret setup.
+# Runs the Cessna 172 finder once a day and on manual demand, then posts the
+# digest as a GitHub Issue. No secrets to configure — it uses the built-in
+# GITHUB_TOKEN. See README.md.
 
 on:
   schedule:
@@ -10,10 +11,10 @@ on:
     - cron: "0 12 * * *"
   workflow_dispatch: {}
 
-# Allow the job to commit the "seen" state file back to the repo so we
-# only alert on each unicorn once.
+# Need to write the "seen" state file back and to open issues.
 permissions:
   contents: write
+  issues: write
 
 # Don't let a slow run overlap with the next scheduled one.
 concurrency:
@@ -38,12 +39,25 @@ jobs:
 
       - name: Run plane finder
         env:
-          PF_SMTP_HOST: ${{ secrets.PF_SMTP_HOST }}
-          PF_SMTP_PORT: ${{ secrets.PF_SMTP_PORT }}
-          PF_SMTP_USER: ${{ secrets.PF_SMTP_USER }}
-          PF_SMTP_PASS: ${{ secrets.PF_SMTP_PASS }}
-          PF_TO_ADDR: ${{ secrets.PF_TO_ADDR }}
+          # Write the digest as Markdown so the next step can post it as an issue.
+          PF_DIGEST_MD: digest.md
         run: python plane_finder.py
+
+      - name: Open digest issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ ! -s digest.md ]]; then
+            echo "No digest produced; skipping issue."
+            exit 0
+          fi
+          gh issue create \
+            --title "Cessna 172 digest — $(date -u +%Y-%m-%d)" \
+            --body-file digest.md \
+            --label plane-finder || \
+          gh issue create \
+            --title "Cessna 172 digest — $(date -u +%Y-%m-%d)" \
+            --body-file digest.md
 
       - name: Persist "seen" state
         # Commit the updated state file so the next run remembers which
