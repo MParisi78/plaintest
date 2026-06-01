@@ -1203,5 +1203,64 @@ def main(debug: bool = False) -> None:
     print("=" * 60)
 
 
+def test_imap() -> None:
+    """Dry-run the IMAP alert-email connection and report what it would ingest.
+
+    Run with:  python plane_finder.py --test-imap
+    Prints connection status and how many alert listings parse — never prints
+    credentials, never touches the dashboard or the daily state.
+    """
+    from collections import Counter
+    cfg = CONFIG["imap"]
+    if not (cfg["user"] and cfg["password"]):
+        print("IMAP not configured: set PF_IMAP_USER and PF_IMAP_PASS "
+              "(see README → 'Getting Trade-A-Plane & Controller in').")
+        return
+    import imaplib
+    import email as email_mod
+
+    print(f"Connecting to {cfg['host']}:{cfg['port']} as {cfg['user']} ...")
+    try:
+        M = imaplib.IMAP4_SSL(cfg["host"], cfg["port"])
+        M.login(cfg["user"], cfg["password"])
+    except Exception as e:  # noqa: BLE001
+        print(f"  [fail] login failed: {e}")
+        print("  Check the address, that 2-Step Verification is on, and that "
+              "PF_IMAP_PASS is a 16-char Gmail App Password (not your login).")
+        return
+    print("  [ok] login succeeded")
+    M.select(cfg["folder"])
+    since = (dt.date.today() - dt.timedelta(days=cfg["since_days"])).strftime("%d-%b-%Y")
+    typ, data = M.search(None, f"(SINCE {since})")
+    ids = data[0].split() if data and data[0] else []
+    print(f"  {len(ids)} message(s) in '{cfg['folder']}' since {since}")
+
+    by_source: Counter = Counter()
+    for num in ids[-300:]:
+        typ, msgdata = M.fetch(num, "(RFC822)")
+        if not msgdata or not msgdata[0]:
+            continue
+        msg = email_mod.message_from_bytes(msgdata[0][1])
+        frm = (msg.get("From") or "").lower()
+        match = next((v for dom, v in ALERT_SOURCES.items() if dom in frm), None)
+        if not match:
+            continue
+        source, base = match
+        by_source[source] += len(_parse_alert_email(source, base, _email_html(msg)))
+    M.logout()
+
+    total = sum(by_source.values())
+    print(f"  parsed {total} listing(s) from alert emails:")
+    for s, n in by_source.most_common():
+        print(f"    {s}: {n}")
+    if total == 0:
+        print("  (Nothing parsed yet. Make sure saved-search email alerts are ON and "
+              "have arrived in this mailbox.\n"
+              "   If alerts ARE there but parse as 0, send me one and I'll tune the parser.)")
+
+
 if __name__ == "__main__":
-    main(debug="--debug" in sys.argv)
+    if "--test-imap" in sys.argv:
+        test_imap()
+    else:
+        main(debug="--debug" in sys.argv)

@@ -1,0 +1,26 @@
+name: Test IMAP
+
+# Manual self-test for the saved-search alert-email ingestion.
+# Actions tab -> Test IMAP -> Run workflow. Reads the PF_IMAP_* secrets,
+# connects read-only, and reports how many alert listings it would ingest.
+# It does NOT deploy the dashboard or change any state.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test-imap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Test IMAP connection
+        env:
+          PF_IMAP_HOST: ${{ secrets.PF_IMAP_HOST }}
+          PF_IMAP_USER: ${{ secrets.PF_IMAP_USER }}
+          PF_IMAP_PASS: ${{ secrets.PF_IMAP_PASS }}
+        run: python plane_finder.py --test-imap
