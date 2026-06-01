@@ -84,12 +84,15 @@ CONFIG = {
     # receives them and the finder folds those listings in. Enabled when
     # PF_IMAP_USER is set.
     "imap": {
-        "host": os.environ.get("PF_IMAP_HOST", "imap.gmail.com"),
-        "port": int(os.environ.get("PF_IMAP_PORT", "993")),
-        "user": os.environ.get("PF_IMAP_USER", ""),
-        "password": os.environ.get("PF_IMAP_PASS", ""),  # app password, not your login
-        "folder": os.environ.get("PF_IMAP_FOLDER", "INBOX"),
-        "since_days": int(os.environ.get("PF_IMAP_SINCE_DAYS", "7")),
+        # `or` (not the get-default) so an empty secret still falls back to Gmail;
+        # strip whitespace/scheme a user might paste in by mistake.
+        "host": (os.environ.get("PF_IMAP_HOST") or "imap.gmail.com").strip()
+                 .replace("https://", "").replace("http://", "").strip("/"),
+        "port": int(os.environ.get("PF_IMAP_PORT") or "993"),
+        "user": os.environ.get("PF_IMAP_USER", "").strip(),
+        "password": os.environ.get("PF_IMAP_PASS", "").strip(),  # app password, not your login
+        "folder": (os.environ.get("PF_IMAP_FOLDER") or "INBOX").strip(),
+        "since_days": int(os.environ.get("PF_IMAP_SINCE_DAYS") or "7"),
     },
 
     # --- US-only ---
@@ -1222,11 +1225,21 @@ def test_imap() -> None:
     print(f"Connecting to {cfg['host']}:{cfg['port']} as {cfg['user']} ...")
     try:
         M = imaplib.IMAP4_SSL(cfg["host"], cfg["port"])
+    except OSError as e:
+        print(f"  [fail] could not reach host '{cfg['host']}': {e}")
+        print("  Fix PF_IMAP_HOST — for Gmail it must be exactly 'imap.gmail.com' "
+              "(no spaces, no https://). If you set it wrong, delete the secret: "
+              "an unset host now defaults to Gmail.")
+        return
+    try:
         M.login(cfg["user"], cfg["password"])
-    except Exception as e:  # noqa: BLE001
-        print(f"  [fail] login failed: {e}")
-        print("  Check the address, that 2-Step Verification is on, and that "
-              "PF_IMAP_PASS is a 16-char Gmail App Password (not your login).")
+    except imaplib.IMAP4.error as e:
+        print(f"  [fail] login rejected: {e}")
+        print("  PF_IMAP_USER must be the full address and PF_IMAP_PASS a 16-char "
+              "Gmail App Password (2-Step Verification on) — not your normal login.")
+        return
+    except OSError as e:  # noqa: BLE001
+        print(f"  [fail] connection error during login: {e}")
         return
     print("  [ok] login succeeded")
     M.select(cfg["folder"])
