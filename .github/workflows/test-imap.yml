@@ -20,7 +20,8 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Test IMAP connection
         env:
-          PF_IMAP_HOST: ${{ secrets.PF_IMAP_HOST }}
           PF_IMAP_USER: ${{ secrets.PF_IMAP_USER }}
           PF_IMAP_PASS: ${{ secrets.PF_IMAP_PASS }}
+          # Host defaults to imap.gmail.com in code; for non-Gmail, uncomment:
+          # PF_IMAP_HOST: ${{ secrets.PF_IMAP_HOST }}
         run: python plane_finder.py --test-imap

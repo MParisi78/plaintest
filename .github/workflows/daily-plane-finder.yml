@@ -58,9 +58,11 @@ jobs:
           PF_HISTORY: plane_finder_history.json  # day-over-day trend, committed back
           # Optional: ingest Trade-A-Plane / Controller saved-search alert emails.
           # Set these three repo secrets to enable; leave unset to skip cleanly.
-          PF_IMAP_HOST: ${{ secrets.PF_IMAP_HOST }}
           PF_IMAP_USER: ${{ secrets.PF_IMAP_USER }}
           PF_IMAP_PASS: ${{ secrets.PF_IMAP_PASS }}
+          # Host defaults to imap.gmail.com in code. For a non-Gmail mailbox,
+          # add a PF_IMAP_HOST secret and uncomment the next line:
+          # PF_IMAP_HOST: ${{ secrets.PF_IMAP_HOST }}
         run: python plane_finder.py
 
       - name: Configure Pages
