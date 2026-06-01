@@ -64,6 +64,10 @@ The finder reads alert emails from known senders (Trade-A-Plane, Controller, ASO
 Barnstormers), parses the listings, and ranks them on the **For Sale** tab right
 alongside the scraped sources. Enabled automatically when `PF_IMAP_USER` is set.
 
+**Verify it works:** Actions tab → **Test IMAP** → **Run workflow**. It connects
+read-only and prints "login succeeded" plus how many alert listings it parsed —
+without deploying anything. (Locally: `python plane_finder.py --test-imap`.)
+
 ## Files
 - `plane_finder.py` — search, scoring, unicorn-detection, dashboard + digest output
 - `.github/workflows/daily-plane-finder.yml` — daily schedule + Pages deploy (runs on GitHub's servers)
