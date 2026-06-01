@@ -1,0 +1,60 @@
+name: Daily Plane Finder
+
+# Runs the Cessna 172 finder once a day and on manual demand.
+# See README.md for the one-time secret setup.
+
+on:
+  schedule:
+    # 12:00 UTC daily (7 AM US Central / 8 AM Eastern).
+    # Format: minute hour day month weekday — always in UTC.
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}
+
+# Allow the job to commit the "seen" state file back to the repo so we
+# only alert on each unicorn once.
+permissions:
+  contents: write
+
+# Don't let a slow run overlap with the next scheduled one.
+concurrency:
+  group: daily-plane-finder
+  cancel-in-progress: false
+
+jobs:
+  find-planes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run plane finder
+        env:
+          PF_SMTP_HOST: ${{ secrets.PF_SMTP_HOST }}
+          PF_SMTP_PORT: ${{ secrets.PF_SMTP_PORT }}
+          PF_SMTP_USER: ${{ secrets.PF_SMTP_USER }}
+          PF_SMTP_PASS: ${{ secrets.PF_SMTP_PASS }}
+          PF_TO_ADDR: ${{ secrets.PF_TO_ADDR }}
+        run: python plane_finder.py
+
+      - name: Persist "seen" state
+        # Commit the updated state file so the next run remembers which
+        # unicorns we've already alerted on. Skips cleanly if nothing changed.
+        run: |
+          if [[ -n "$(git status --porcelain plane_finder_seen.json)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add plane_finder_seen.json
+            git commit -m "chore: update plane finder seen state [skip ci]"
+            git push
+          else
+            echo "No state change to commit."
+          fi
