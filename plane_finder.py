@@ -1030,13 +1030,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
 <section id="tab-sale">
   <input type="search" id="filter" placeholder="Filter by make, model, location...">
   <select id="fMake"><option value="">All makes</option></select>
-  <select id="fSeats">
-    <option value="">Any seats</option>
-    <option value="2">2+ seats</option>
-    <option value="4">4+ seats</option>
-    <option value="5">5+ seats</option>
-    <option value="6">6+ seats</option>
-  </select>
+  <select id="fSeats"><option value="">Any seats</option></select>
   <table id="tbl">
     <thead><tr>
       <th data-k="rank">#</th>
@@ -1159,11 +1153,17 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
   const link = (l) => `<a href="${l.url || '#'}" target="_blank" rel="noopener">${esc(l.title)}</a>`;
   const cell = (v) => v || v === 0 ? v.toLocaleString() : "&mdash;";
 
-  // populate the Make dropdown from the data
+  // build both filter dropdowns from the makes / seat counts actually present
+  const addOpt = (sel, val, label) => {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label; sel.appendChild(o);
+  };
   const fMake = document.getElementById("fMake");
-  [...new Set(D.top.map(l => l.make).filter(Boolean))].sort().forEach(m => {
-    const o = document.createElement("option"); o.value = m; o.textContent = m; fMake.appendChild(o);
-  });
+  [...new Set(D.top.map(l => l.make).filter(Boolean))].sort()
+    .forEach(m => addOpt(fMake, m, m));
+  const fSeats = document.getElementById("fSeats");
+  [...new Set(D.top.map(l => l.seats).filter(s => s != null))].sort((a, b) => a - b)
+    .forEach(s => addOpt(fSeats, s, s + "+ seats"));
 
   controller("#tbl", "#filter", D.top, l => `
     <tr>
