@@ -61,8 +61,14 @@ saved-search email alerts**, which are server-side and never blocked:
    Optional: `PF_IMAP_FOLDER` (default `INBOX`), `PF_IMAP_SINCE_DAYS` (default `7`).
 
 The finder reads alert emails from known senders (Trade-A-Plane, Controller, ASO,
-Barnstormers), parses the listings, and ranks them on the **For Sale** tab right
-alongside the scraped sources. Enabled automatically when `PF_IMAP_USER` is set.
+Barnstormers) and ingests **every aircraft** in them — not just Cessna 172s —
+parsing out **make, model, year, price, total time, and seats**. These land on
+the **For Sale** tab (shown in full, bypassing the 172/price hard filters), where
+you narrow them with the dashboard's **make** dropdown, **seats** dropdown, and
+text filter. Enabled automatically when `PF_IMAP_USER` is set.
+
+> Scraped sources (GlobalAir, Barnstormers, auctions) stay Cessna-172-focused;
+> your email alerts are what bring in other makes/models per your saved search.
 
 **Verify it works:** Actions tab → **Test IMAP** → **Run workflow**. It connects
 read-only and prints "login succeeded" plus how many alert listings it parsed —
