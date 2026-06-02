@@ -126,7 +126,9 @@ class Listing:
     source: str
     title: str
     year: int | None = None
+    make: str = ""
     model: str = ""
+    seats: int | None = None
     price: int | None = None
     total_time: int | None = None      # airframe hours
     engine_smoh: int | None = None      # hours since major overhaul
@@ -136,6 +138,7 @@ class Listing:
     location: str = ""
     score: float = 0.0
     unicorn: bool = False
+    from_alert: bool = False   # came from a saved-search alert email (shown unfiltered)
     # auction-specific (AircraftBidder)
     auction: bool = False
     bids: int | None = None
@@ -246,21 +249,76 @@ def _is_us(location: str | None) -> bool | None:
 
 
 def _extract_smoh(text: str) -> int | None:
-    """Engine hours since major overhaul, from free text like '635 hours SMOH'."""
-    m = re.search(
-        r"([\d,]{1,5})\s*(?:hrs?\.?\s*)?(?:hours?\s*)?"
-        r"(?:since\s+(?:major\s+)?overhaul|smoh|stoh)",
-        (text or "").lower())
+    """Engine hours since major overhaul: '635 hours SMOH' or 'SMOH877'."""
+    low = (text or "").lower()
+    # label-first form first ('SMOH877'), so a preceding TT number isn't grabbed
+    m = re.search(r"(?:smoh|stoh)\s*([\d,]{1,5})", low)
+    if not m:
+        m = re.search(
+            r"([\d,]{1,5})\s*(?:hrs?\.?\s*)?(?:hours?\s*)?"
+            r"(?:since\s+(?:major\s+)?overhaul|smoh|stoh)", low)
     return _num(m.group(1)) if m else None
 
 
 def _extract_tt(text: str) -> int | None:
-    """Airframe total time from free text: '3,150 TT', '7,770 Hours Total Time'."""
+    """Airframe total time: '3,150 TT', '7,770 Hours Total Time', or 'TTAF3250'."""
+    low = (text or "").lower()
     m = re.search(
         r"([\d,]{2,6})\s*(?:hrs?|hours?)?\s*"
-        r"(?:total time|tt(?:sn|af)?|ttaf|airframe|time since new)",
-        (text or "").lower())
+        r"(?:total time|tt(?:sn|af)?|ttaf|airframe|time since new)", low)
+    if not m:  # label-first form, e.g. 'TTAF3250'
+        m = re.search(r"(?:ttaf|ttsn|tt)\s*([\d,]{2,6})", low)
     return _num(m.group(1)) if m else None
+
+
+# --- make / model / seats -----------------------------------------------------
+_MAKES = [
+    "cessna", "beechcraft", "beech", "piper", "mooney", "cirrus", "diamond",
+    "grumman", "bellanca", "american champion", "champion", "aeronca", "maule",
+    "aviat", "commander", "navion", "stinson", "luscombe", "taylorcraft",
+    "ercoupe", "globe", "lake", "socata", "tecnam", "vans", "van's", "lancair",
+    "glasair", "rockwell", "north american", "ryan", "waco",
+]
+# rough seat counts for common GA models (used when the listing doesn't say)
+_SEATS_BY_MODEL = {
+    "150": 2, "152": 2, "120": 2, "140": 2, "j3": 2, "j-3": 2, "cub": 2,
+    "162": 2, "ercoupe": 2, "luscombe": 2,
+    "170": 4, "172": 4, "175": 4, "177": 4, "180": 4, "182": 4, "p210": 6,
+    "190": 5, "195": 5, "skylane": 4, "skyhawk": 4, "cardinal": 4,
+    "cherokee": 4, "archer": 4, "arrow": 4, "warrior": 4, "dakota": 4,
+    "comanche": 4, "bonanza": 4, "debonair": 4, "musketeer": 4, "sundowner": 4,
+    "sr20": 4, "sr22": 4, "da40": 4, "m20": 4, "mooney": 4,
+    "206": 6, "207": 6, "210": 6, "saratoga": 6, "lance": 6, "206h": 6,
+    "baron": 6, "a55": 6, "b55": 6, "55": 6, "58": 6, "310": 6, "da42": 4,
+}
+
+
+def _make_model(title: str, default_make: str = "") -> tuple[str, str]:
+    """Pull (make, model) from a listing title like 'BEECHCRAFT A55 BARON'."""
+    low = title.lower()
+    for mk in _MAKES:
+        if mk in low:
+            make = mk.title()
+            after = title[low.index(mk) + len(mk):].strip()
+            # stop the model at a registration (N1234), a 4-digit year, or big gap
+            model = re.split(r"\s{2,}|\bN\d{2,}|\b(?:19|20)\d{2}\b", after)[0]
+            model = " ".join(model.strip(" -|,").split()[:3])
+            return make, model
+    # no known make: fall back to a numeric designation if present
+    mm = re.search(r"\b([12][0-9]{2}[A-Za-z]?)\b", title)
+    return default_make, (mm.group(1) if mm else "")
+
+
+def _seats(text: str, model: str = "") -> int | None:
+    """Seat count: explicit '5 seat'/'4 place' if stated, else infer from model."""
+    m = re.search(r"\b(\d)\s*(?:-|\s)?(?:seat|seats|place|passenger)\b", (text or "").lower())
+    if m:
+        return int(m.group(1))
+    ml = (model or "").lower()
+    for key, n in _SEATS_BY_MODEL.items():
+        if key in ml:
+            return n
+    return None
 
 
 def _detect_damage(text: str) -> bool | None:
@@ -310,8 +368,12 @@ def _listing_from_text(source: str, title: str, body: str, url: str,
     if pm:
         price = _num(pm.group(1))
 
+    make, model = _make_model(title)
+    if not model:
+        model = _model_variant(title)
     return Listing(
-        source=source, title=title, year=year, model=_model_variant(title),
+        source=source, title=title, year=year, make=make, model=model,
+        seats=_seats(body, model),
         price=price, total_time=_extract_tt(body), engine_smoh=_extract_smoh(body),
         damage_history=_detect_damage(body), ifr_ready=_detect_ifr(body),
         url=url, location=location,
@@ -363,10 +425,12 @@ def _listing_from_globalair(item: dict, url: str) -> Listing:
     avionics = f"{ga('avionicsPackage')} {ga('avionicsDetails')}"
     history = f"{ga('aircraftMaintenance')} {ga('airframeDetails')} {ga('shortSummary')}"
     desig = str(ga("aircraftDesignation") or "172")
+    make = str(ga("aircraftManufacturer") or "Cessna").title()
+    model = _model_variant(name, desig if desig.startswith("172") else desig)
 
     return Listing(
-        source="GlobalAir", title=name, year=year,
-        model=_model_variant(name, desig if desig.startswith("172") else "172"),
+        source="GlobalAir", title=name, year=year, make=make, model=model,
+        seats=_seats(f"{name} {history}", model),
         price=price, total_time=_num(str(ga("totalTime"))),
         engine_smoh=_extract_smoh(str(ga("engineDetails")) + " " + str(ga("propellerDetails"))),
         damage_history=_detect_damage(history),
@@ -555,36 +619,70 @@ def _email_html(msg) -> str:
     return html or text
 
 
+def _is_title_line(line: str) -> bool:
+    """A listing title line in an alert email, e.g. 'CESSNA 195B' / 'BEECHCRAFT A55 BARON'."""
+    s = line.strip()
+    if not (3 <= len(s) <= 60) or s != s.upper():
+        return False
+    low = s.lower()
+    return any(low.startswith(mk) or f" {mk} " in f" {low} " for mk in _MAKES)
+
+
 def _parse_alert_email(source: str, base: str, html: str) -> list[Listing]:
-    """Pull Cessna 172 listings out of one saved-search alert email."""
+    """Pull ALL aircraft listings out of one saved-search alert email.
+
+    Trade-A-Plane alerts format each listing as an ALL-CAPS make/model title
+    line followed by a free-text description (and sometimes a link), so we parse
+    by blocks rather than by anchor tags. Make/model/seats are extracted too.
+    """
     out: list[Listing] = []
     if not html:
         return out
     soup = BeautifulSoup(html, "html.parser")
-    year_re = re.compile(r"\b(19[5-9]\d|20[0-2]\d)\b")
+    # collect anchors so we can attach a detail URL to each block
+    links = [(a.get_text(" ", strip=True), a["href"])
+             for a in soup.find_all("a", href=True)]
+    text = soup.get_text("\n")
+
+    lines = [ln.strip() for ln in text.splitlines()]
+    # focus on the listings region, between the header and the footer
+    try:
+        start = next(i for i, ln in enumerate(lines)
+                     if re.search(r"new .*listings", ln, re.I))
+    except StopIteration:
+        start = 0
+    end = len(lines)
+    for i, ln in enumerate(lines[start + 1:], start + 1):
+        if re.search(r"to view all|not getting this|manage your email|copyright", ln, re.I):
+            end = i
+            break
+
+    # split into (title, body-lines) blocks
+    blocks, cur = [], None
+    for ln in lines[start + 1:end]:
+        if _is_title_line(ln):
+            cur = {"title": ln, "body": []}
+            blocks.append(cur)
+        elif cur is not None and ln:
+            cur["body"].append(ln)
+
     seen = set()
-    for a in soup.find_all("a", href=True):
-        text = a.get_text(" ", strip=True)
-        if "172" not in text or not year_re.search(text):
-            continue
-        href = a["href"]
-        if href.startswith("/"):
-            href = base.rstrip("/") + href
-        # find the smallest enclosing cell/row/item that holds just THIS listing,
-        # so a neighbouring listing's price doesn't bleed in
-        container, node = None, a
-        for _ in range(5):
-            node = node.parent if node is not None else None
-            if node is None:
-                break
-            if node.name in ("td", "tr", "li", "article", "div"):
-                n = sum(1 for x in node.find_all("a")
-                        if "172" in x.get_text() and year_re.search(x.get_text()))
-                if n <= 1:
-                    container = node
+    for b in blocks:
+        title = b["title"].strip()
+        body = " ".join(b["body"])
+        full = f"{title} {body}"
+        # detail URL: a link in the body, or an anchor whose text sits in the block
+        urlm = re.search(r"https?://\S+", body)
+        url = urlm.group(0).rstrip(".,)") if urlm else ""
+        if not url:
+            for ltext, href in links:
+                if ltext and ltext in full:
+                    url = href
                     break
-        body = (container or a.parent or a).get_text(" ", strip=True)
-        l = _listing_from_text(source, text, body, href)
+        l = _listing_from_text(source, title.title(), full, url)
+        l.make, l.model = _make_model(title)
+        l.seats = _seats(full, l.model)
+        l.from_alert = True
         lm = re.search(r"\b([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+)*,\s*[A-Z]{2})\b", body)
         if lm:
             l.location = lm.group(1).strip()
@@ -857,7 +955,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cessna 172 Finder</title>
+<title>Plane Finder</title>
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
@@ -881,8 +979,11 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
   .card { border: 1px solid #ddd; border-radius: 10px; padding: 10px 16px; background: #fff; }
   .card .n { font-size: 26px; font-weight: 700; }
   .card .l { color: #888; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-  input[type=search] { width: 100%; max-width: 320px; padding: 8px 12px; margin: 0 0 12px;
+  input[type=search] { width: 100%; max-width: 320px; padding: 8px 12px; margin: 0 8px 12px 0;
                        border: 1px solid #ccc; border-radius: 8px; font-size: 14px; }
+  select { padding: 8px 10px; margin: 0 8px 12px 0; border: 1px solid #ccc;
+           border-radius: 8px; font-size: 14px; background: #fff; }
+  @media (prefers-color-scheme: dark) { select { background: #1e1e1e; color: #e8e8e8; border-color: #444; } }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e2e2e2; }
   @media (prefers-color-scheme: dark) { th, td { border-color: #303030; } }
@@ -905,9 +1006,9 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
 </style>
 </head>
 <body>
-<h1>&#9992;&#65039; Cessna 172 Finder</h1>
+<h1>&#9992;&#65039; Plane Finder</h1>
 <p class="sub">Updated <b id="updated"></b> &middot;
-   target: <span id="crit"></span></p>
+   <span id="crit"></span></p>
 
 <div id="unicorns"></div>
 
@@ -927,7 +1028,15 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
 </div>
 
 <section id="tab-sale">
-  <input type="search" id="filter" placeholder="Filter by title, model, source...">
+  <input type="search" id="filter" placeholder="Filter by make, model, location...">
+  <select id="fMake"><option value="">All makes</option></select>
+  <select id="fSeats">
+    <option value="">Any seats</option>
+    <option value="2">2+ seats</option>
+    <option value="4">4+ seats</option>
+    <option value="5">5+ seats</option>
+    <option value="6">6+ seats</option>
+  </select>
   <table id="tbl">
     <thead><tr>
       <th data-k="rank">#</th>
@@ -935,7 +1044,9 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       <th data-k="title">Listing</th>
       <th data-k="price">Price</th>
       <th data-k="total_time">TT</th>
+      <th data-k="make">Make</th>
       <th data-k="model">Model</th>
+      <th data-k="seats">Seats</th>
       <th data-k="year">Year</th>
       <th data-k="location">Location</th>
       <th data-k="source">Source</th>
@@ -977,7 +1088,8 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
   const D = JSON.parse(document.getElementById("data").textContent);
   document.getElementById("updated").textContent = D.updated;
   document.getElementById("crit").textContent =
-    D.min_year + "+ · no damage · under $" + D.ceiling.toLocaleString();
+    "scraped: " + D.min_year + "+, no damage, US, under $" + D.ceiling.toLocaleString()
+    + " · alerts: all aircraft (filter below)";
   D.auctions = D.auctions || [];
   document.getElementById("stat-top").textContent = D.top.length;
   document.getElementById("stat-uni").textContent = D.unicorns.length;
@@ -1007,7 +1119,8 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
     `<span style="height:${Math.round((h.kept||0)/hmax*100)}%" title="${h.date}: ${h.kept} matches"></span>`).join("");
 
   // reusable sortable/filterable table controller
-  function controller(tblSel, filterSel, data, rowFn) {
+  function controller(tblSel, filterSel, data, rowFn, opts) {
+    opts = opts || {};
     const rows = data.map((l, i) => ({ ...l, rank: i + 1 }));
     const tbl = document.querySelector(tblSel);
     const input = document.querySelector(filterSel);
@@ -1016,7 +1129,8 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
     function draw() {
       const f = input.value.toLowerCase();
       let list = rows.filter(l =>
-        (l.title + " " + l.model + " " + l.source + " " + (l.location||"")).toLowerCase().includes(f));
+        (l.title + " " + (l.make||"") + " " + l.model + " " + l.source + " " + (l.location||""))
+          .toLowerCase().includes(f) && (!opts.extra || opts.extra(l)));
       list.sort((a, b) => {
         const x = a[sortK], y = b[sortK];
         const v = (x == null) - (y == null) ||
@@ -1035,11 +1149,21 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       draw();
     }));
     input.addEventListener("input", draw);
+    (opts.controls || []).forEach(sel => {
+      const el = document.querySelector(sel);
+      if (el) el.addEventListener("change", draw);
+    });
     draw();
   }
 
-  const link = (l) => `<a href="${l.url}" target="_blank" rel="noopener">${esc(l.title)}</a>`;
+  const link = (l) => `<a href="${l.url || '#'}" target="_blank" rel="noopener">${esc(l.title)}</a>`;
   const cell = (v) => v || v === 0 ? v.toLocaleString() : "&mdash;";
+
+  // populate the Make dropdown from the data
+  const fMake = document.getElementById("fMake");
+  [...new Set(D.top.map(l => l.make).filter(Boolean))].sort().forEach(m => {
+    const o = document.createElement("option"); o.value = m; o.textContent = m; fMake.appendChild(o);
+  });
 
   controller("#tbl", "#filter", D.top, l => `
     <tr>
@@ -1048,11 +1172,21 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       <td>${link(l)}<div class="reasons">${esc((l.reasons||[]).join("; "))}</div></td>
       <td>${l.price ? "$" + l.price.toLocaleString() : "&mdash;"}</td>
       <td>${cell(l.total_time)}</td>
+      <td>${esc(l.make) || "&mdash;"}</td>
       <td>${esc(l.model)}</td>
+      <td>${l.seats ?? "&mdash;"}</td>
       <td>${l.year ?? "&mdash;"}</td>
       <td>${esc(l.location) || "&mdash;"}</td>
       <td>${esc(l.source)}</td>
-    </tr>`);
+    </tr>`, {
+      controls: ["#fMake", "#fSeats"],
+      extra: l => {
+        const mk = fMake.value, st = document.getElementById("fSeats").value;
+        if (mk && (l.make || "") !== mk) return false;
+        if (st && !(l.seats != null && l.seats >= +st)) return false;
+        return true;
+      }
+    });
 
   controller("#tblA", "#filterA", D.auctions, l => `
     <tr>
@@ -1128,13 +1262,14 @@ def main(debug: bool = False) -> None:
     # dedupe by uid
     uniq = {l.uid: l for l in all_listings}.values()
 
-    # filter + score
-    kept = [l for l in uniq if passes_hard_filters(l)]
+    # filter + score. Scraped sources are held to the buy criteria; alert-email
+    # listings are consumed in full (you narrow them with the dashboard filters).
+    kept = [l for l in uniq if l.from_alert or passes_hard_filters(l)]
     for l in kept:
         score_listing(l)
     kept.sort(key=lambda x: x.score, reverse=True)
 
-    top = kept[:CONFIG["top_n"]]
+    top = kept[:CONFIG["top_n"]]          # capped list for the email/issue digest
     unicorns = [l for l in kept if l.unicorn]
 
     # only alert on NEW unicorns
@@ -1187,7 +1322,7 @@ def main(debug: bool = False) -> None:
     if site_dir:
         os.makedirs(site_dir, exist_ok=True)
         with open(os.path.join(site_dir, "index.html"), "w") as f:
-            f.write(build_dashboard_html(top, unicorns, history, auctions))
+            f.write(build_dashboard_html(kept, unicorns, history, auctions))
         # Tell GitHub Pages to serve the artifact as-is (skip Jekyll), so the
         # dashboard is never mistaken for a Jekyll site / README homepage.
         open(os.path.join(site_dir, ".nojekyll"), "w").close()
