@@ -1030,6 +1030,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
 <section id="tab-sale">
   <input type="search" id="filter" placeholder="Filter by make, model, location...">
   <select id="fMake"><option value="">All makes</option></select>
+  <select id="fModel"><option value="">All models</option></select>
   <select id="fSeats"><option value="">Any seats</option></select>
   <table id="tbl">
     <thead><tr>
@@ -1055,6 +1056,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
     Bids are legally binding and a buyer's premium is added on top — inspect before bidding.</p>
   <input type="search" id="filterA" placeholder="Filter auctions by make, model, location...">
   <select id="fMakeA"><option value="">All makes</option></select>
+  <select id="fModelA"><option value="">All models</option></select>
   <select id="fSeatsA"><option value="">Any seats</option></select>
   <table id="tblA">
     <thead><tr>
@@ -1162,15 +1164,18 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
     const o = document.createElement("option");
     o.value = val; o.textContent = label; sel.appendChild(o);
   };
-  function fillFilters(data, makeId, seatsId) {
-    const mk = document.getElementById(makeId), st = document.getElementById(seatsId);
+  function fillFilters(data, makeId, modelId, seatsId) {
+    const mk = document.getElementById(makeId), md = document.getElementById(modelId),
+          st = document.getElementById(seatsId);
     [...new Set(data.map(l => l.make).filter(Boolean))].sort()
       .forEach(m => addOpt(mk, m, m));
+    [...new Set(data.map(l => l.model).filter(Boolean))].sort()
+      .forEach(m => addOpt(md, m, m));
     [...new Set(data.map(l => l.seats).filter(s => s != null))].sort((a, b) => a - b)
       .forEach(s => addOpt(st, s, s + "+ seats"));
   }
-  fillFilters(D.top, "fMake", "fSeats");
-  fillFilters(D.auctions, "fMakeA", "fSeatsA");
+  fillFilters(D.top, "fMake", "fModel", "fSeats");
+  fillFilters(D.auctions, "fMakeA", "fModelA", "fSeatsA");
 
   controller("#tbl", "#filter", D.top, l => `
     <tr>
@@ -1186,10 +1191,13 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       <td>${esc(l.location) || "&mdash;"}</td>
       <td>${esc(l.source)}</td>
     </tr>`, {
-      controls: ["#fMake", "#fSeats"],
+      controls: ["#fMake", "#fModel", "#fSeats"],
       extra: l => {
-        const mk = document.getElementById("fMake").value, st = document.getElementById("fSeats").value;
+        const mk = document.getElementById("fMake").value,
+              md = document.getElementById("fModel").value,
+              st = document.getElementById("fSeats").value;
         if (mk && (l.make || "") !== mk) return false;
+        if (md && (l.model || "") !== md) return false;
         if (st && !(l.seats != null && l.seats >= +st)) return false;
         return true;
       }
@@ -1210,11 +1218,13 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       <td>${esc(l.location) || "&mdash;"}</td>
       <td>${esc(l.status) || "&mdash;"}</td>
     </tr>`, {
-      controls: ["#fMakeA", "#fSeatsA"],
+      controls: ["#fMakeA", "#fModelA", "#fSeatsA"],
       extra: l => {
-        const mk = document.getElementById("fMakeA").value;
-        const st = document.getElementById("fSeatsA").value;
+        const mk = document.getElementById("fMakeA").value,
+              md = document.getElementById("fModelA").value,
+              st = document.getElementById("fSeatsA").value;
         if (mk && (l.make || "") !== mk) return false;
+        if (md && (l.model || "") !== md) return false;
         if (st && !(l.seats != null && l.seats >= +st)) return false;
         return true;
       }
